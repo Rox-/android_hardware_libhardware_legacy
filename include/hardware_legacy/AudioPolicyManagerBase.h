@@ -1,5 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
+ * Copyright (c) 2012, The Linux Foundation. All rights reserved.
+ * Not a Contribution.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -12,6 +14,25 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * This file was modified by Dolby Laboratories, Inc. The portions of the
+ * code that are surrounded by "DOLBY..." are copyrighted and
+ * licensed separately, as follows:
+ *
+ *  (C) 2011-2012 Dolby Laboratories, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
  */
 
 
@@ -99,12 +120,7 @@ public:
                                             uint32_t samplingRate,
                                             uint32_t format,
                                             uint32_t channels,
-#ifdef STE_AUDIO
-                                            AudioSystem::audio_in_acoustics acoustics,
-                                            audio_input_clients *inputClientId = NULL);
-#else
                                             AudioSystem::audio_in_acoustics acoustics);
-#endif
 
         // indicates to the audio policy manager that the input starts being used.
         virtual status_t startInput(audio_io_handle_t input);
@@ -138,6 +154,10 @@ public:
         virtual status_t setEffectEnabled(int id, bool enabled);
 
         virtual bool isStreamActive(int stream, uint32_t inPastMs = 0) const;
+        // return whether a stream is playing remotely, override to change the definition of
+        //   local/remote playback, used for instance by notification manager to not make
+        //   media players lose audio focus when not playing locally
+        virtual bool isStreamActiveRemotely(int stream, uint32_t inPastMs = 0) const;
         virtual bool isSourceActive(audio_source_t source) const;
 
         virtual status_t dump(int fd);
@@ -246,16 +266,19 @@ protected:
 
             status_t    dump(int fd);
 
-            audio_devices_t device();
-            void changeRefCount(AudioSystem::stream_type, int delta);
-            uint32_t refCount();
-            uint32_t strategyRefCount(routing_strategy strategy);
-            bool isUsedByStrategy(routing_strategy strategy) { return (strategyRefCount(strategy) != 0);}
+            audio_devices_t device() const;
+            void changeRefCount(AudioSystem::stream_type stream, int delta);
             bool isDuplicated() const { return (mOutput1 != NULL && mOutput2 != NULL); }
             audio_devices_t supportedDevices();
             uint32_t latency();
             bool sharesHwModuleWith(const AudioOutputDescriptor *outputDesc);
-            bool isActive(uint32_t inPastMs) const;
+            bool isActive(uint32_t inPastMs = 0) const;
+            bool isStreamActive(AudioSystem::stream_type stream,
+                                uint32_t inPastMs = 0,
+                                nsecs_t sysTime = 0) const;
+            bool isStrategyActive(routing_strategy strategy,
+                             uint32_t inPastMs = 0,
+                             nsecs_t sysTime = 0) const;
 
             audio_io_handle_t mId;              // output handle
             uint32_t mSamplingRate;             //
@@ -273,6 +296,7 @@ protected:
             const IOProfile *mProfile;          // I/O profile this output derives from
             bool mStrategyMutedByDevice[NUM_STRATEGIES]; // strategies muted because of incompatible
                                                 // device selection. See checkDeviceMuteStrategies()
+            uint32_t mDirectOpenCount; // number of clients using this output (direct outputs only)
         };
 
         // descriptor for audio inputs. Used to maintain current configuration of each opened audio input
@@ -345,11 +369,7 @@ protected:
 
         // change the route of the specified output. Returns the number of ms we have slept to
         // allow new routing to take effect in certain cases.
-#ifdef QCOM_HARDWARE
         virtual uint32_t setOutputDevice(audio_io_handle_t output,
-#else
-        uint32_t setOutputDevice(audio_io_handle_t output,
-#endif
                              audio_devices_t device,
                              bool force = false,
                              int delayMs = 0);
@@ -370,11 +390,7 @@ protected:
         virtual float computeVolume(int stream, int index, audio_io_handle_t output, audio_devices_t device);
 
         // check that volume change is permitted, compute and send new volume to audio hardware
-#ifdef QCOM_HARDWARE
         virtual status_t checkAndSetVolume(int stream, int index, audio_io_handle_t output, audio_devices_t device, int delayMs = 0, bool force = false);
-#else
-        status_t checkAndSetVolume(int stream, int index, audio_io_handle_t output, audio_devices_t device, int delayMs = 0, bool force = false);
-#endif
 
         // apply all stream volumes to the specified output and device
         void applyStreamVolumes(audio_io_handle_t output, audio_devices_t device, int delayMs = 0, bool force = false);
@@ -387,11 +403,7 @@ protected:
                              audio_devices_t device = (audio_devices_t)0);
 
         // Mute or unmute the stream on the specified output
-#ifdef QCOM_HARDWARE
         virtual void setStreamMute(int stream,
-#else
-        void setStreamMute(int stream,
-#endif
                            bool on,
                            audio_io_handle_t output,
                            int delayMs = 0,
@@ -471,7 +483,18 @@ protected:
 
         // returns the category the device belongs to with regard to volume curve management
         static device_category getDeviceCategory(audio_devices_t device);
+#ifdef DOLBY_UDC_MULTICHANNEL
+        enum HdmiDeviceCapability {
+            HDMI_8,
+            HDMI_6,
+            HDMI_2,
+            HDMI_INVALID
+        };
 
+        void setDolbySystemProperty(audio_devices_t);
+
+        HdmiDeviceCapability mCurrentHdmiDeviceCapability;
+#endif //DOLBY_UDC_MULTICHANNEL
         // extract one device relevant for volume control from multiple device selection
         static audio_devices_t getDeviceForVolume(audio_devices_t device);
 
@@ -494,11 +517,7 @@ protected:
                                    uint32_t samplingRate,
                                    uint32_t format,
                                    uint32_t channelMask);
-#ifdef QCOM_HARDWARE
-        virtual IOProfile *getProfileForDirectOutput(audio_devices_t device,
-#else
         IOProfile *getProfileForDirectOutput(audio_devices_t device,
-#endif
                                                        uint32_t samplingRate,
                                                        uint32_t format,
                                                        uint32_t channelMask,
